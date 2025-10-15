@@ -1,0 +1,16 @@
+version: '3'
+services:
+  web-app:
+    container_name: web-app-container
+    image: my_project_image
+    build:
+      context: .                      # Относительная ссылка на текущий каталог
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"                   # Открытый порт (можете изменить)
+    volumes:
+      - .:/usr/src/app                 # Монтируем текущий каталог в контейнер
+    command: ["python", "/usr/src/app/main.py"]  # Запуск приложения
+    environment:
+      - DEBUG=1                        # Режим дебага (не обязательно)
+    restart: always                    # Перезапуск контейнера при сбоях
