@@ -4,12 +4,38 @@ from mysql.connector import Error
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from functools import wraps
 import hashlib
+import secrets
 from datetime import datetime
 import re
 from werkzeug.utils import secure_filename
+import bcrypt
+import logging
+from logging.handlers import RotatingFileHandler
+import time
+from collections import defaultdict
+
+# Настройка логирования
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s',
+    handlers=[
+        RotatingFileHandler('logs/app.log', maxBytes=10000000, backupCount=5, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY', 'your_default_secret_key')
+app.secret_key = os.getenv('SECRET_KEY', secrets.token_hex(32))
+
+# Конфигурация безопасности
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('FLASK_ENV') == 'production'
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Конфигурация базы данных
 DB_CONFIG = {
@@ -17,7 +43,7 @@ DB_CONFIG = {
     'port': int(os.getenv('MYSQL_PORT', 3306)),
     'user': os.getenv('MYSQL_USER', 'root'),
     'password': os.getenv('MYSQL_PASSWORD', 'Tochankau110574'),
-    'database': os.getenv('MYSQL_DATABASE', 'Football')
+    'database': os.getenv('MYSQL_DATABASE', 'Gold_medal')
 }
 
 # Папки для загрузки изображений
@@ -30,21 +56,33 @@ os.makedirs(UPLOAD_FOLDER_CLUBS, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
+# Rate limiting storage
+login_attempts = defaultdict(list)
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # Список разрешенных таблиц
 ALLOWED_TABLES = {
     'gentleman_coefficient', 'golden_ball', 'players', 'clubs',
-    'personal_stats', 'awards', 'trophies', 'footballers', 'logs', 'users'
+    'personal_stats', 'awards', 'trophies', 'footballers', 'logs', 'users',
+    'bot_users', 'bot_logs', 'bot_sessions'
 }
 
 def get_db_connection():
-    try:
-        return mysql.connect(**DB_CONFIG)
-    except Error as e:
-        print(f"Ошибка подключения к базе данных: {e}")
-        return None
+    """Получение подключения к БД с повторными попытками"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            connection = mysql.connect(**DB_CONFIG)
+            if connection.is_connected():
+                return connection
+        except Error as e:
+            logger.error(f"Попытка {attempt + 1} подключения к БД не удалась: {e}")
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep(2)
+    return None
 
 def test_connection():
     try:
@@ -56,6 +94,21 @@ def test_connection():
     except Error:
         return False
 
+def rate_limit(key, max_attempts=5, window_seconds=300):
+    """Простая реализация rate limiting"""
+    now = time.time()
+    attempts = login_attempts[key]
+
+    # Удаляем старые попытки
+    attempts = [attempt for attempt in attempts if now - attempt < window_seconds]
+    login_attempts[key] = attempts
+
+    if len(attempts) >= max_attempts:
+        return False
+
+    attempts.append(now)
+    return True
+
 def login_required(role='user'):
     def decorator(f):
         @wraps(f)
@@ -63,39 +116,63 @@ def login_required(role='user'):
             if 'user_id' not in session:
                 flash('Требуется авторизация', 'error')
                 return redirect(url_for('login'))
+
+            # Проверка IP-адреса для защиты от hijacking сессии
+            if session.get('ip_address') != request.remote_addr:
+                session.clear()
+                flash('Обнаружена подозрительная активность. Пожалуйста, войдите снова.', 'error')
+                return redirect(url_for('login'))
+
             if role == 'admin' and session.get('role') != 'admin':
                 flash('Доступ запрещен. Требуются права администратора.', 'error')
                 return redirect(url_for('index'))
             return f(*args, **kwargs)
+
         return decorated_function
+
     return decorator
 
-def validate_input(text, max_length=255, pattern=None):
+def validate_input(text, max_length=255, pattern=None, field_name=""):
+    """Улучшенная валидация ввода"""
     if not text or len(text.strip()) == 0:
-        return False
+        return False, f"Поле {field_name} не может быть пустым"
+
     if len(text) > max_length:
-        return False
+        return False, f"Поле {field_name} слишком длинное (макс. {max_length} символов)"
+
+    # Защита от SQL injection и XSS
+    dangerous_patterns = [
+        r'(\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|EXEC)\b)',
+        r'(\b(script|javascript|onload|onerror)\b)',
+        r'([<>\"\']|&lt;|&gt;|&quot;)'
+    ]
+
+    for dangerous_pattern in dangerous_patterns:
+        if re.search(dangerous_pattern, text, re.IGNORECASE):
+            return False, f"Поле {field_name} содержит запрещенные символы"
+
     if pattern and not re.match(pattern, text):
-        return False
-    return True
+        return False, f"Некорректный формат поля {field_name}"
+
+    return True, ""
 
 def validate_number(value, min_val=0, max_val=100):
     try:
         num = int(value)
-        return min_val <= num <= max_val
+        return min_val <= num <= max_val, ""
     except (ValueError, TypeError):
-        return False
+        return False, "Некорректное числовое значение"
 
 def validate_float(value, min_val=1.0, max_val=5.0):
     try:
         num = float(value)
-        return min_val <= num <= max_val
+        return min_val <= num <= max_val, ""
     except (ValueError, TypeError):
-        return False
+        return False, "Некорректное значение с плавающей точкой"
 
 def initialize_database():
     if not test_connection():
-        print("Не удалось подключиться к MySQL. Проверьте настройки подключения.")
+        logger.error("Не удалось подключиться к MySQL. Проверьте настройки подключения.")
         return False
 
     try:
@@ -115,18 +192,21 @@ def initialize_database():
                     '''CREATE TABLE IF NOT EXISTS gentleman_coefficient (
                         id INT PRIMARY KEY AUTO_INCREMENT,
                         coefficient FLOAT NOT NULL,
-                        footballer VARCHAR(255) NOT NULL
+                        footballer VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''',
                     '''CREATE TABLE IF NOT EXISTS golden_ball (
                         id INT PRIMARY KEY AUTO_INCREMENT,
-                        holder VARCHAR(255) NOT NULL
+                        holder VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''',
                     '''CREATE TABLE IF NOT EXISTS players (
                         id INT PRIMARY KEY AUTO_INCREMENT,
                         victories INT NOT NULL DEFAULT 0,
                         losses INT NOT NULL DEFAULT 0,
                         draws INT NOT NULL DEFAULT 0,
-                        player_name VARCHAR(255) NOT NULL
+                        player_name VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''',
                     '''CREATE TABLE IF NOT EXISTS clubs (
                         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -138,24 +218,28 @@ def initialize_database():
                         losses INT NOT NULL DEFAULT 0,
                         draws INT NOT NULL DEFAULT 0,
                         club_name VARCHAR(255) NOT NULL,
-                        image_path VARCHAR(255) DEFAULT NULL
+                        image_path VARCHAR(255) DEFAULT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''',
                     '''CREATE TABLE IF NOT EXISTS personal_stats (
                         id INT PRIMARY KEY AUTO_INCREMENT,
                         player_name VARCHAR(255) NOT NULL,
                         goals INT NOT NULL DEFAULT 0,
                         assists INT NOT NULL DEFAULT 0,
-                        clean_sheets INT NOT NULL DEFAULT 0
+                        clean_sheets INT NOT NULL DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''',
                     '''CREATE TABLE IF NOT EXISTS awards (
                         id INT PRIMARY KEY AUTO_INCREMENT,
                         top_scorer VARCHAR(255) NOT NULL,
-                        top_assist VARCHAR(255) NOT NULL
+                        top_assist VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''',
                     '''CREATE TABLE IF NOT EXISTS trophies (
                         id INT PRIMARY KEY AUTO_INCREMENT,
                         club_name VARCHAR(255) NOT NULL,
-                        trophy_type VARCHAR(100) NOT NULL
+                        trophy_type VARCHAR(100) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''',
                     '''CREATE TABLE IF NOT EXISTS footballers (
                         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -163,25 +247,56 @@ def initialize_database():
                         last_name VARCHAR(100) NOT NULL,
                         age INT NOT NULL,
                         club VARCHAR(255) NOT NULL,
-                        image_path VARCHAR(255) DEFAULT NULL
+                        image_path VARCHAR(255) DEFAULT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''',
                     '''CREATE TABLE IF NOT EXISTS logs (
                         id INT PRIMARY KEY AUTO_INCREMENT,
-                        text TEXT NOT NULL
+                        text TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )''',
                     '''CREATE TABLE IF NOT EXISTS users (
                         id INT PRIMARY KEY AUTO_INCREMENT,
                         login VARCHAR(100) NOT NULL UNIQUE,
                         password_hash VARCHAR(255) NOT NULL,
-                        role VARCHAR(50) DEFAULT 'user'
+                        role VARCHAR(50) DEFAULT 'user',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        last_login TIMESTAMP NULL
+                    )''',
+                    '''CREATE TABLE IF NOT EXISTS bot_users (
+                        id INT PRIMARY KEY AUTO_INCREMENT,
+                        telegram_id BIGINT UNIQUE NOT NULL,
+                        username VARCHAR(100),
+                        first_name VARCHAR(100),
+                        last_name VARCHAR(100),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )''',
+                    '''CREATE TABLE IF NOT EXISTS bot_logs (
+                        id INT PRIMARY KEY AUTO_INCREMENT,
+                        telegram_id BIGINT NOT NULL,
+                        action VARCHAR(100) NOT NULL,
+                        details TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_telegram_id (telegram_id),
+                        INDEX idx_created_at (created_at)
+                    )''',
+                    '''CREATE TABLE IF NOT EXISTS bot_sessions (
+                        id INT PRIMARY KEY AUTO_INCREMENT,
+                        telegram_id BIGINT NOT NULL,
+                        session_data JSON,
+                        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (telegram_id) REFERENCES bot_users(telegram_id) ON DELETE CASCADE,
+                        INDEX idx_telegram_id (telegram_id)
                     )'''
                 ]
 
                 for sql in tables_sql:
                     cursor.execute(sql)
 
+                # Создание администратора с совместимым паролем
                 cursor.execute("SELECT COUNT(*) FROM users WHERE login = %s", ('admin',))
                 if cursor.fetchone()[0] == 0:
+                    # Используем sha256 для совместимости
                     admin_password = hashlib.sha256("Админчик".encode()).hexdigest()
                     cursor.execute(
                         "INSERT INTO users(login, password_hash, role) VALUES (%s, %s, %s)",
@@ -189,15 +304,33 @@ def initialize_database():
                     )
 
                 connection.commit()
-                print(f"База данных {DB_CONFIG['database']} инициализирована успешно")
+                logger.info(f"База данных {DB_CONFIG['database']} инициализирована успешно")
                 return True
 
     except Error as e:
-        print(f"Ошибка инициализации базы данных: {e}")
+        logger.error(f"Ошибка инициализации базы данных: {e}")
         return False
 
 def encrypt_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Безопасное хеширование паролей с bcrypt"""
+    try:
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Ошибка хеширования пароля: {e}")
+        return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password, hashed):
+    """Проверка пароля"""
+    try:
+        # Проверяем, является ли хеш bcrypt
+        if hashed.startswith('$2b$') or hashed.startswith('$2a$') or hashed.startswith('$2y$'):
+            return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+        else:
+            # Fallback для старых паролей с sha256
+            return hashed == hashlib.sha256(password.encode()).hexdigest()
+    except Exception as e:
+        logger.error(f"Ошибка проверки пароля: {e}")
+        return False
 
 def write_log(text):
     try:
@@ -207,7 +340,7 @@ def write_log(text):
                 cursor.execute("INSERT INTO logs(text) VALUES (%s)", (f'{timestamp}: {text}',))
                 connection.commit()
     except Error as e:
-        print(f"Ошибка записи лога: {e}")
+        logger.error(f"Ошибка записи лога: {e}")
 
 @app.route('/')
 def index():
@@ -219,6 +352,12 @@ def login():
     if request.method == 'POST':
         login_input = request.form.get('login', '').strip()
         password = request.form.get('password', '')
+        ip_address = request.remote_addr
+
+        # Rate limiting
+        if not rate_limit(f"login_{ip_address}"):
+            flash('Слишком много попыток входа. Попробуйте позже.', 'error')
+            return render_template('login.html')
 
         if not login_input or not password:
             flash('Заполните все поля', 'error')
@@ -233,10 +372,19 @@ def login():
                     )
                     user = cursor.fetchone()
 
-                    if user and user[1] == encrypt_password(password):
+                    if user and verify_password(password, user[1]):
                         session['user_id'] = user[0]
                         session['login'] = login_input
                         session['role'] = user[2]
+                        session['ip_address'] = ip_address
+
+                        # Обновляем время последнего входа
+                        cursor.execute(
+                            "UPDATE users SET last_login = NOW() WHERE id = %s",
+                            (user[0],)
+                        )
+                        connection.commit()
+
                         write_log(f"Пользователь {login_input} вошел в систему с ролью {user[2]}")
                         flash('Успешный вход в систему', 'success')
                         return redirect(url_for('index'))
@@ -245,7 +393,7 @@ def login():
 
         except Error as e:
             flash('Ошибка подключения к базе данных', 'error')
-            print(f"Ошибка входа: {e}")
+            logger.error(f"Ошибка входа: {e}")
 
     return render_template('login.html')
 
@@ -264,12 +412,18 @@ def register():
             flash('Пароли не совпадают', 'error')
             return render_template('register.html')
 
-        if len(password) < 4:
-            flash('Пароль должен быть не менее 4 символов', 'error')
+        if len(password) < 8:
+            flash('Пароль должен быть не менее 8 символов', 'error')
             return render_template('register.html')
 
-        if not validate_input(login_input, max_length=100):
-            flash('Некорректный логин', 'error')
+        # Проверка сложности пароля
+        if not re.search(r'[A-Z]', password) or not re.search(r'[a-z]', password) or not re.search(r'\d', password):
+            flash('Пароль должен содержать заглавные и строчные буквы, а также цифры', 'error')
+            return render_template('register.html')
+
+        is_valid, error_msg = validate_input(login_input, max_length=100, field_name="логин")
+        if not is_valid:
+            flash(error_msg, 'error')
             return render_template('register.html')
 
         hashed_password = encrypt_password(password)
@@ -291,7 +445,7 @@ def register():
                 flash('Пользователь с таким логином уже существует', 'error')
             else:
                 flash('Ошибка регистрации', 'error')
-                print(f"Ошибка регистрации: {e}")
+                logger.error(f"Ошибка регистрации: {e}")
 
     return render_template('register.html')
 
@@ -316,14 +470,18 @@ def vote_player():
             flash('Заполните все обязательные поля', 'error')
             return render_template('vote_player.html')
 
-        if not all([
-            validate_input(first_name, max_length=100),
-            validate_input(last_name, max_length=100),
-            validate_input(club, max_length=255),
-            validate_number(age, 0, 100)
-        ]):
-            flash('Некорректные данные в полях', 'error')
-            return render_template('vote_player.html')
+        # Валидация полей
+        validations = [
+            (validate_input(first_name, max_length=100, field_name="имя"), first_name),
+            (validate_input(last_name, max_length=100, field_name="фамилия"), last_name),
+            (validate_input(club, max_length=255, field_name="клуб"), club),
+            (validate_number(age, 16, 50), age)
+        ]
+
+        for (is_valid, error_msg), field_value in validations:
+            if not is_valid:
+                flash(error_msg, 'error')
+                return render_template('vote_player.html')
 
         numeric_fields = {
             'wins': (0, 100),
@@ -339,13 +497,15 @@ def vote_player():
         for field, (min_val, max_val) in numeric_fields.items():
             value = request.form.get(field, '0').strip()
             if field == 'gentleman_coef':
-                if not validate_float(value, min_val, max_val):
-                    flash(f'Некорректное значение для {field}', 'error')
+                is_valid, error_msg = validate_float(value, min_val, max_val)
+                if not is_valid:
+                    flash(f'Некорректное значение для {field}: {error_msg}', 'error')
                     return render_template('vote_player.html')
                 field_values[field] = float(value) if value else 1.0
             else:
-                if not validate_number(value, min_val, max_val):
-                    flash(f'Некорректное значение для {field}', 'error')
+                is_valid, error_msg = validate_number(value, min_val, max_val)
+                if not is_valid:
+                    flash(f'Некорректное значение для {field}: {error_msg}', 'error')
                     return render_template('vote_player.html')
                 field_values[field] = int(value) if value else 0
 
@@ -353,21 +513,19 @@ def vote_player():
         image_path = None
         if 'image' in request.files:
             file = request.files['image']
-            if file and allowed_file(file.filename):
+            if file and file.filename != '' and allowed_file(file.filename):
                 filename = secure_filename(file.filename)
+                # Добавляем timestamp для уникальности
+                name, ext = os.path.splitext(filename)
+                filename = f"{name}_{int(datetime.now().timestamp())}{ext}"
                 filepath = os.path.join(app.config['UPLOAD_FOLDER_PLAYERS'], filename)
                 file.save(filepath)
-                image_path = filepath
+                image_path = f"uploads/players/{filename}"
 
         try:
             with get_db_connection() as connection:
                 with connection.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(*) FROM footballers")
-                    count = cursor.fetchone()[0]
-                    if count >= 30:
-                        flash('Достигнуто максимальное количество футболистов (30)', 'error')
-                        return render_template('vote_player.html')
-
+                    # УБРАНО ограничение на количество футболистов
                     cursor.execute(
                         "INSERT INTO footballers(first_name, last_name, age, club, image_path) VALUES (%s, %s, %s, %s, %s)",
                         (first_name, last_name, int(age), club, image_path)
@@ -417,7 +575,7 @@ def vote_player():
 
         except Error as e:
             flash(f'Ошибка при добавлении футболиста: {str(e)}', 'error')
-            print(f"Ошибка добавления футболиста: {e}")
+            logger.error(f"Ошибка добавления футболиста: {e}")
 
     return render_template('vote_player.html')
 
@@ -431,10 +589,12 @@ def vote_team():
             flash('Название клуба обязательно для заполнения', 'error')
             return render_template('vote_team.html')
 
-        if not validate_input(club_name, max_length=255):
-            flash('Некорректное название клуба', 'error')
+        is_valid, error_msg = validate_input(club_name, max_length=255, field_name="название клуба")
+        if not is_valid:
+            flash(error_msg, 'error')
             return render_template('vote_team.html')
 
+        # ОГРАНИЧЕНИЕ: максимум 2 трофея каждого типа
         trophy_fields = {
             'super_cup': (0, 2),
             'champion_league': (0, 2),
@@ -445,8 +605,9 @@ def vote_team():
         trophy_values = {}
         for field, (min_val, max_val) in trophy_fields.items():
             value = request.form.get(field, '0').strip()
-            if not validate_number(value, min_val, max_val):
-                flash(f'Количество {field} должно быть от {min_val} до {max_val}', 'error')
+            is_valid, error_msg = validate_number(value, min_val, max_val)
+            if not is_valid:
+                flash(f'Количество {field}: {error_msg}', 'error')
                 return render_template('vote_team.html')
             trophy_values[field] = int(value) if value else 0
 
@@ -454,11 +615,14 @@ def vote_team():
         image_path = None
         if 'image' in request.files:
             file = request.files['image']
-            if file and allowed_file(file.filename):
+            if file and file.filename != '' and allowed_file(file.filename):
                 filename = secure_filename(file.filename)
+                # Добавляем timestamp для уникальности
+                name, ext = os.path.splitext(filename)
+                filename = f"{name}_{int(datetime.now().timestamp())}{ext}"
                 filepath = os.path.join(app.config['UPLOAD_FOLDER_CLUBS'], filename)
                 file.save(filepath)
-                image_path = filepath
+                image_path = f"uploads/clubs/{filename}"
 
         try:
             with get_db_connection() as connection:
@@ -468,14 +632,13 @@ def vote_team():
 
                     if club_exists:
                         club_id = club_exists[0]
-                        # Обновление со вставкой пути к изображению, если есть
                         if image_path:
                             cursor.execute(
                                 """UPDATE clubs SET super_cup = super_cup + %s, champion_league = champion_league + %s,
                                 national_championship = national_championship + %s, cup = cup + %s, image_path = %s
                                 WHERE id = %s""",
                                 (trophy_values['super_cup'], trophy_values['champion_league'],
-                                trophy_values['national_championship'], trophy_values['cup'], image_path, club_id)
+                                 trophy_values['national_championship'], trophy_values['cup'], image_path, club_id)
                             )
                         else:
                             cursor.execute(
@@ -483,7 +646,7 @@ def vote_team():
                                 national_championship = national_championship + %s, cup = cup + %s
                                 WHERE id = %s""",
                                 (trophy_values['super_cup'], trophy_values['champion_league'],
-                                trophy_values['national_championship'], trophy_values['cup'], club_id)
+                                 trophy_values['national_championship'], trophy_values['cup'], club_id)
                             )
                     else:
                         cursor.execute(
@@ -491,7 +654,7 @@ def vote_team():
                             victories, losses, draws, club_name, image_path)
                             VALUES (%s, %s, %s, %s, 0, 0, 0, %s, %s)""",
                             (trophy_values['super_cup'], trophy_values['champion_league'],
-                            trophy_values['national_championship'], trophy_values['cup'], club_name, image_path)
+                             trophy_values['national_championship'], trophy_values['cup'], club_name, image_path)
                         )
                         club_id = cursor.lastrowid
 
@@ -508,7 +671,7 @@ def vote_team():
 
         except Error as e:
             flash(f'Ошибка при работе с клубом: {str(e)}', 'error')
-            print(f"Ошибка работы с клубом: {e}")
+            logger.error(f"Ошибка работы с клубом: {e}")
 
     return render_template('vote_team.html')
 
@@ -528,6 +691,9 @@ def admin_panel():
                 cursor.execute("SELECT COUNT(*) FROM clubs")
                 clubs_count = cursor.fetchone()[0]
 
+                cursor.execute("SELECT COUNT(*) FROM bot_users")
+                bot_users_count = cursor.fetchone()[0]
+
                 cursor.execute("SELECT text FROM logs ORDER BY id DESC LIMIT 5")
                 logs_data = cursor.fetchall()
 
@@ -543,6 +709,7 @@ def admin_panel():
                                users_count=users_count,
                                players_count=players_count,
                                clubs_count=clubs_count,
+                               bot_users_count=bot_users_count,
                                recent_logs=recent_logs)
 
     except Error as e:
@@ -556,13 +723,36 @@ def admin_users():
     try:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT id, login, role FROM users")
+                cursor.execute("SELECT id, login, role, created_at, last_login FROM users ORDER BY created_at DESC")
                 users = cursor.fetchall()
 
         return render_template('admin_users.html', users=users)
 
     except Error as e:
         flash(f'Ошибка загрузки пользователей: {str(e)}', 'error')
+        return redirect(url_for('admin_panel'))
+
+@app.route('/admin/bot_users')
+@login_required('admin')
+def admin_bot_users():
+    """Пользователи бота."""
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT bu.telegram_id, bu.username, bu.first_name, bu.last_name, bu.created_at,
+                           COUNT(bl.id) as action_count
+                    FROM bot_users bu
+                    LEFT JOIN bot_logs bl ON bu.telegram_id = bl.telegram_id
+                    GROUP BY bu.telegram_id
+                    ORDER BY bu.created_at DESC
+                """)
+                bot_users = cursor.fetchall()
+
+        return render_template('admin_bot_users.html', bot_users=bot_users)
+
+    except Error as e:
+        flash(f'Ошибка загрузки пользователей бота: {str(e)}', 'error')
         return redirect(url_for('admin_panel'))
 
 @app.route('/admin/add_user', methods=['POST'])
@@ -577,12 +767,13 @@ def admin_add_user():
         flash('Введите логин и пароль', 'error')
         return redirect(url_for('admin_users'))
 
-    if len(password) < 4:
-        flash('Пароль должен быть не менее 4 символов', 'error')
+    if len(password) < 8:
+        flash('Пароль должен быть не менее 8 символов', 'error')
         return redirect(url_for('admin_users'))
 
-    if not validate_input(login_input, max_length=100):
-        flash('Некорректный логин', 'error')
+    is_valid, error_msg = validate_input(login_input, max_length=100, field_name="логин")
+    if not is_valid:
+        flash(error_msg, 'error')
         return redirect(url_for('admin_users'))
 
     hashed_password = encrypt_password(password)
@@ -644,7 +835,7 @@ def admin_golden_ball():
     try:
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT holder FROM golden_ball")
+                cursor.execute("SELECT holder, created_at FROM golden_ball ORDER BY created_at DESC")
                 holders = cursor.fetchall()
 
         return render_template('admin_golden_ball.html', holders=holders)
@@ -665,7 +856,7 @@ def admin_query():
             return render_template('admin_query.html')
 
         # Запрещенные операции для безопасности
-        dangerous_keywords = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'CREATE', 'TRUNCATE']
+        dangerous_keywords = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'CREATE', 'TRUNCATE', 'GRANT', 'REVOKE']
         if any(keyword in query.upper() for keyword in dangerous_keywords):
             flash('Запрещенный тип запроса. Разрешены только SELECT запросы.', 'error')
             return render_template('admin_query.html')
@@ -741,7 +932,7 @@ def admin_delete_record():
                         club_name = club_data[0]
                         cursor.execute("DELETE FROM clubs WHERE id = %s", (record_id,))
                         cursor.execute("DELETE FROM trophies WHERE club_name = %s", (club_name,))
-                        cursor.execute("UPDATE footballers SET club='' WHERE club = %s", (club_name,))
+                        cursor.execute("UPDATE footballers SET club='Свободный агент' WHERE club = %s", (club_name,))
                 else:
                     cursor.execute(f"DELETE FROM {table} WHERE id = %s", (record_id,))
 
@@ -806,9 +997,9 @@ def calculate_awards_and_winner():
                     (first_name, last_name, club, goals, assists, clean_sheets,
                      p_victories, p_draws, p_losses, c_victories, c_draws, c_losses, gentleman_coef) = player
 
-                    score = (goals + assists + clean_sheets +
-                             c_victories + c_draws + p_victories + p_draws -
-                             c_losses - p_losses) * gentleman_coef
+                    score = (goals * 2 + assists * 1.5 + clean_sheets * 3 +
+                             (c_victories + p_victories) * 2 + (c_draws + p_draws) * 1 -
+                             (c_losses + p_losses) * 0.5) * gentleman_coef
 
                     if score > best_score:
                         best_score = score
@@ -817,18 +1008,31 @@ def calculate_awards_and_winner():
                 # Добавление победителя
                 if best_player:
                     cursor.execute("INSERT INTO golden_ball(holder) VALUES (%s)", (best_player,))
-                    write_log(f"Победитель Золотого мяча: {best_player} с очками {best_score}")
+                    write_log(f"Победитель Золотого мяча: {best_player} с очками {best_score:.2f}")
 
                 connection.commit()
                 write_log(f"Награды обновлены: лучший бомбардир - {top_scorer}, лучший ассистент - {top_assist}")
 
     except Error as e:
-        print(f"Ошибка расчета наград: {e}")
+        logger.error(f"Ошибка расчета наград: {e}")
+
+# Упрощенные обработчики ошибок без шаблонов
+@app.errorhandler(404)
+def not_found_error(error):
+    return "Страница не найдена", 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return "Внутренняя ошибка сервера", 500
+
+def main():
+    """Основная функция запуска приложения"""
+    if initialize_database():
+        logger.info("Flask приложение успешно запущено.")
+        app.run(host='0.0.0.0', port=5000, debug=False)
+    else:
+        logger.error("Ошибка инициализации базы данных. Приложение не запущено.")
+        exit(1)
 
 if __name__ == '__main__':
-    if initialize_database():
-        print("Flask приложение успешно запущено.")
-        app.run(host='0.0.0.0', debug=False)
-    else:
-        print("Ошибка инициализации базы данных. Приложение не запущено.")
-        exit(1)
+    main()

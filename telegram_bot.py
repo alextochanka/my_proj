@@ -1,454 +1,917 @@
-from random import choice
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InputFile
-import telebot
 import os
+import mysql.connector as mysql
+from mysql.connector import Error
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+import telebot
+from datetime import datetime
+import json
+import logging
+from dotenv import load_dotenv
+import re
+import random
+import time
+from random import choice
 
-token = os.getenv('TELEGRAM_TOKEN', '8315061997:AAFEeHeoS16xB119HDNk5AMQwCKeZ64Y1ek')
+load_dotenv()
+
+# Настройка логирования на русском
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+token = os.getenv('TELEGRAM_TOKEN')
+if not token:
+    logger.error("Токен Telegram не найден в переменных окружения")
+    token = '8315061997:AAFEeHeoS16xB119HDNk5AMQwCKeZ64Y1ek'
+
 bot = telebot.TeleBot(token)
 
-GUI_APP_PATH = 'http://158.160.203.139:5000/, http://127.0.0.1:5000, http://192.168.1.105:5000'
+# Конфигурация БД Gold_medal
+DB_CONFIG = {
+    'host': os.getenv('MYSQL_HOST', 'localhost'),
+    'port': int(os.getenv('MYSQL_PORT', 3306)),
+    'user': os.getenv('MYSQL_USER', 'root'),
+    'password': os.getenv('MYSQL_PASSWORD', 'Tochankau110574'),
+    'database': os.getenv('MYSQL_DATABASE', 'Gold_medal')
+}
 
+# Расширенные списки случайных футболистов (50 игроков)
 RANDOM_TASKS_PLAYERS = [
-    {'name': 'Erling Haaland', 'goals': 36, 'assists': 8, 'clean_sheets': 0},
-    {'name': 'Giovanni Di Lorenzo', 'goals': 2, 'assists': 5, 'clean_sheets': 12},
-    {'name': 'Kylian Mbappé', 'goals': 44, 'assists': 10, 'clean_sheets': 0},
-    {'name': 'Lionel Messi', 'goals': 20, 'assists': 15, 'clean_sheets': 0},
-    {'name': 'Cristiano Ronaldo', 'goals': 35, 'assists': 3, 'clean_sheets': 0},
-    {'name': 'Virgil van Dijk', 'goals': 1, 'assists': 2, 'clean_sheets': 20},
-    {'name': 'Kevin De Bruyne', 'goals': 10, 'assists': 16, 'clean_sheets': 0},
-    {'name': 'Robert Lewandowski', 'goals': 48, 'assists': 9, 'clean_sheets': 0}
+    {'first_name': 'Erling', 'last_name': 'Haaland', 'age': 23, 'club': 'Manchester City', 'goals': 36, 'assists': 8,
+     'clean_sheets': 0, 'victories': 28, 'losses': 5, 'draws': 5, 'gentleman_coef': 4.2},
+    {'first_name': 'Giovanni', 'last_name': 'Di Lorenzo', 'age': 30, 'club': 'Napoli', 'goals': 2, 'assists': 5,
+     'clean_sheets': 12, 'victories': 24, 'losses': 6, 'draws': 8, 'gentleman_coef': 4.5},
+    {'first_name': 'Kylian', 'last_name': 'Mbappé', 'age': 24, 'club': 'Paris Saint-Germain', 'goals': 44,
+     'assists': 10, 'clean_sheets': 0, 'victories': 26, 'losses': 4, 'draws': 8, 'gentleman_coef': 3.8},
+    {'first_name': 'Lionel', 'last_name': 'Messi', 'age': 36, 'club': 'Inter Miami', 'goals': 20, 'assists': 15,
+     'clean_sheets': 0, 'victories': 22, 'losses': 8, 'draws': 8, 'gentleman_coef': 4.8},
+    {'first_name': 'Cristiano', 'last_name': 'Ronaldo', 'age': 38, 'club': 'Al Nassr', 'goals': 35, 'assists': 3,
+     'clean_sheets': 0, 'victories': 25, 'losses': 7, 'draws': 6, 'gentleman_coef': 4.0},
+    {'first_name': 'Virgil', 'last_name': 'van Dijk', 'age': 32, 'club': 'Liverpool', 'goals': 1, 'assists': 2,
+     'clean_sheets': 20, 'victories': 23, 'losses': 9, 'draws': 6, 'gentleman_coef': 4.3},
+    {'first_name': 'Kevin', 'last_name': 'De Bruyne', 'age': 32, 'club': 'Manchester City', 'goals': 10, 'assists': 16,
+     'clean_sheets': 0, 'victories': 28, 'losses': 5, 'draws': 5, 'gentleman_coef': 4.6},
+    {'first_name': 'Robert', 'last_name': 'Lewandowski', 'age': 35, 'club': 'Barcelona', 'goals': 48, 'assists': 9,
+     'clean_sheets': 0, 'victories': 24, 'losses': 6, 'draws': 8, 'gentleman_coef': 4.1},
+    {'first_name': 'Harry', 'last_name': 'Kane', 'age': 30, 'club': 'Bayern Munich', 'goals': 32, 'assists': 8,
+     'clean_sheets': 0, 'victories': 24, 'losses': 4, 'draws': 10, 'gentleman_coef': 4.4},
+    {'first_name': 'Mohamed', 'last_name': 'Salah', 'age': 31, 'club': 'Liverpool', 'goals': 25, 'assists': 12,
+     'clean_sheets': 0, 'victories': 23, 'losses': 9, 'draws': 6, 'gentleman_coef': 4.2},
+    {'first_name': 'Karim', 'last_name': 'Benzema', 'age': 36, 'club': 'Al Ittihad', 'goals': 18, 'assists': 7,
+     'clean_sheets': 0, 'victories': 20, 'losses': 10, 'draws': 8, 'gentleman_coef': 4.1},
+    {'first_name': 'Neymar', 'last_name': 'Jr', 'age': 32, 'club': 'Al Hilal', 'goals': 15, 'assists': 14,
+     'clean_sheets': 0, 'victories': 22, 'losses': 6, 'draws': 10, 'gentleman_coef': 3.9},
+    {'first_name': 'Luka', 'last_name': 'Modric', 'age': 38, 'club': 'Real Madrid', 'goals': 3, 'assists': 9,
+     'clean_sheets': 0, 'victories': 26, 'losses': 6, 'draws': 6, 'gentleman_coef': 4.7},
+    {'first_name': 'Thibaut', 'last_name': 'Courtois', 'age': 31, 'club': 'Real Madrid', 'goals': 0, 'assists': 0,
+     'clean_sheets': 18, 'victories': 26, 'losses': 6, 'draws': 6, 'gentleman_coef': 4.3},
+    {'first_name': 'Manuel', 'last_name': 'Neuer', 'age': 37, 'club': 'Bayern Munich', 'goals': 0, 'assists': 0,
+     'clean_sheets': 15, 'victories': 24, 'losses': 4, 'draws': 10, 'gentleman_coef': 4.5},
+    {'first_name': 'Toni', 'last_name': 'Kroos', 'age': 34, 'club': 'Real Madrid', 'goals': 2, 'assists': 8,
+     'clean_sheets': 0, 'victories': 26, 'losses': 6, 'draws': 6, 'gentleman_coef': 4.8},
+    {'first_name': 'Joshua', 'last_name': 'Kimmich', 'age': 29, 'club': 'Bayern Munich', 'goals': 4, 'assists': 11,
+     'clean_sheets': 0, 'victories': 24, 'losses': 4, 'draws': 10, 'gentleman_coef': 4.4},
+    {'first_name': 'Bruno', 'last_name': 'Fernandes', 'age': 29, 'club': 'Manchester United', 'goals': 14,
+     'assists': 15,
+     'clean_sheets': 0, 'victories': 20, 'losses': 12, 'draws': 6, 'gentleman_coef': 4.1},
+    {'first_name': 'Bernardo', 'last_name': 'Silva', 'age': 29, 'club': 'Manchester City', 'goals': 7, 'assists': 8,
+     'clean_sheets': 0, 'victories': 28, 'losses': 5, 'draws': 5, 'gentleman_coef': 4.6},
+    {'first_name': 'Ruben', 'last_name': 'Dias', 'age': 26, 'club': 'Manchester City', 'goals': 1, 'assists': 1,
+     'clean_sheets': 16, 'victories': 28, 'losses': 5, 'draws': 5, 'gentleman_coef': 4.4},
+    {'first_name': 'Marcus', 'last_name': 'Rashford', 'age': 26, 'club': 'Manchester United', 'goals': 17, 'assists': 5,
+     'clean_sheets': 0, 'victories': 20, 'losses': 12, 'draws': 6, 'gentleman_coef': 3.9},
+    {'first_name': 'Jude', 'last_name': 'Bellingham', 'age': 20, 'club': 'Real Madrid', 'goals': 19, 'assists': 6,
+     'clean_sheets': 0, 'victories': 26, 'losses': 6, 'draws': 6, 'gentleman_coef': 4.3},
+    {'first_name': 'Victor', 'last_name': 'Osimhen', 'age': 25, 'club': 'Napoli', 'goals': 26, 'assists': 4,
+     'clean_sheets': 0, 'victories': 24, 'losses': 6, 'draws': 8, 'gentleman_coef': 4.2},
+    {'first_name': 'Khvicha', 'last_name': 'Kvaratskhelia', 'age': 23, 'club': 'Napoli', 'goals': 12, 'assists': 13,
+     'clean_sheets': 0, 'victories': 24, 'losses': 6, 'draws': 8, 'gentleman_coef': 4.0},
+    {'first_name': 'Lautaro', 'last_name': 'Martinez', 'age': 26, 'club': 'Inter Milan', 'goals': 24, 'assists': 6,
+     'clean_sheets': 0, 'victories': 23, 'losses': 7, 'draws': 8, 'gentleman_coef': 4.2},
+    {'first_name': 'Son', 'last_name': 'Heung-min', 'age': 31, 'club': 'Tottenham', 'goals': 14, 'assists': 8,
+     'clean_sheets': 0, 'victories': 18, 'losses': 11, 'draws': 9, 'gentleman_coef': 4.5},
+    {'first_name': 'Bukayo', 'last_name': 'Saka', 'age': 22, 'club': 'Arsenal', 'goals': 15, 'assists': 11,
+     'clean_sheets': 0, 'victories': 25, 'losses': 6, 'draws': 7, 'gentleman_coef': 4.3},
+    {'first_name': 'Martin', 'last_name': 'Odegaard', 'age': 25, 'club': 'Arsenal', 'goals': 8, 'assists': 10,
+     'clean_sheets': 0, 'victories': 25, 'losses': 6, 'draws': 7, 'gentleman_coef': 4.4},
+    {'first_name': 'Phil', 'last_name': 'Foden', 'age': 23, 'club': 'Manchester City', 'goals': 11, 'assists': 7,
+     'clean_sheets': 0, 'victories': 28, 'losses': 5, 'draws': 5, 'gentleman_coef': 4.2},
+    {'first_name': 'Jack', 'last_name': 'Grealish', 'age': 28, 'club': 'Manchester City', 'goals': 5, 'assists': 11,
+     'clean_sheets': 0, 'victories': 28, 'losses': 5, 'draws': 5, 'gentleman_coef': 4.1},
+    {'first_name': 'Rodri', 'last_name': '', 'age': 27, 'club': 'Manchester City', 'goals': 4, 'assists': 7,
+     'clean_sheets': 0, 'victories': 28, 'losses': 5, 'draws': 5, 'gentleman_coef': 4.6},
+    {'first_name': 'Antonio', 'last_name': 'Rudiger', 'age': 30, 'club': 'Real Madrid', 'goals': 1, 'assists': 1,
+     'clean_sheets': 14, 'victories': 26, 'losses': 6, 'draws': 6, 'gentleman_coef': 4.2},
+    {'first_name': 'David', 'last_name': 'Alaba', 'age': 31, 'club': 'Real Madrid', 'goals': 2, 'assists': 3,
+     'clean_sheets': 12, 'victories': 26, 'losses': 6, 'draws': 6, 'gentleman_coef': 4.4},
+    {'first_name': 'Federico', 'last_name': 'Valverde', 'age': 25, 'club': 'Real Madrid', 'goals': 7, 'assists': 5,
+     'clean_sheets': 0, 'victories': 26, 'losses': 6, 'draws': 6, 'gentleman_coef': 4.3},
+    {'first_name': 'Vinicius', 'last_name': 'Junior', 'age': 23, 'club': 'Real Madrid', 'goals': 10, 'assists': 9,
+     'clean_sheets': 0, 'victories': 26, 'losses': 6, 'draws': 6, 'gentleman_coef': 3.8},
+    {'first_name': 'Rodrygo', 'last_name': '', 'age': 23, 'club': 'Real Madrid', 'goals': 9, 'assists': 8,
+     'clean_sheets': 0, 'victories': 26, 'losses': 6, 'draws': 6, 'gentleman_coef': 4.0},
+    {'first_name': 'Jamal', 'last_name': 'Musiala', 'age': 20, 'club': 'Bayern Munich', 'goals': 12, 'assists': 10,
+     'clean_sheets': 0, 'victories': 24, 'losses': 4, 'draws': 10, 'gentleman_coef': 4.2},
+    {'first_name': 'Leroy', 'last_name': 'Sane', 'age': 28, 'club': 'Bayern Munich', 'goals': 10, 'assists': 11,
+     'clean_sheets': 0, 'victories': 24, 'losses': 4, 'draws': 10, 'gentleman_coef': 4.1},
+    {'first_name': 'Kingsley', 'last_name': 'Coman', 'age': 27, 'club': 'Bayern Munich', 'goals': 8, 'assists': 7,
+     'clean_sheets': 0, 'victories': 24, 'losses': 4, 'draws': 10, 'gentleman_coef': 4.0},
+    {'first_name': 'Serge', 'last_name': 'Gnabry', 'age': 28, 'club': 'Bayern Munich', 'goals': 11, 'assists': 6,
+     'clean_sheets': 0, 'victories': 24, 'losses': 4, 'draws': 10, 'gentleman_coef': 3.9},
+    {'first_name': 'Achraf', 'last_name': 'Hakimi', 'age': 25, 'club': 'Paris Saint-Germain', 'goals': 4, 'assists': 6,
+     'clean_sheets': 8, 'victories': 26, 'losses': 4, 'draws': 8, 'gentleman_coef': 4.1},
+    {'first_name': 'Marquinhos', 'last_name': '', 'age': 29, 'club': 'Paris Saint-Germain', 'goals': 2, 'assists': 1,
+     'clean_sheets': 10, 'victories': 26, 'losses': 4, 'draws': 8, 'gentleman_coef': 4.3},
+    {'first_name': 'Marco', 'last_name': 'Verratti', 'age': 31, 'club': 'Al Arabi', 'goals': 1, 'assists': 8,
+     'clean_sheets': 0, 'victories': 22, 'losses': 6, 'draws': 10, 'gentleman_coef': 4.4},
+    {'first_name': 'Alexandre', 'last_name': 'Lacazette', 'age': 32, 'club': 'Lyon', 'goals': 27, 'assists': 5,
+     'clean_sheets': 0, 'victories': 16, 'losses': 12, 'draws': 10, 'gentleman_coef': 4.2},
+    {'first_name': 'Nicolo', 'last_name': 'Barella', 'age': 26, 'club': 'Inter Milan', 'goals': 6, 'assists': 9,
+     'clean_sheets': 0, 'victories': 23, 'losses': 7, 'draws': 8, 'gentleman_coef': 4.5},
+    {'first_name': 'Fikayo', 'last_name': 'Tomori', 'age': 25, 'club': 'AC Milan', 'goals': 1, 'assists': 1,
+     'clean_sheets': 11, 'victories': 20, 'losses': 8, 'draws': 10, 'gentleman_coef': 4.3},
+    {'first_name': 'Mike', 'last_name': 'Maignan', 'age': 28, 'club': 'AC Milan', 'goals': 0, 'assists': 0,
+     'clean_sheets': 14, 'victories': 20, 'losses': 8, 'draws': 10, 'gentleman_coef': 4.4},
+    {'first_name': 'Theo', 'last_name': 'Hernandez', 'age': 26, 'club': 'AC Milan', 'goals': 4, 'assists': 5,
+     'clean_sheets': 8, 'victories': 20, 'losses': 8, 'draws': 10, 'gentleman_coef': 4.1}
 ]
 
+# Расширенные списки случайных клубов (40 клубов)
 RANDOM_TASKS_CLUBS = [
-    {'name': 'Manchester City', 'super_cups': 1, 'cups': 2, 'championships': 2, 'champions_leagues': 1},
-    {'name': 'Real Madrid', 'super_cups': 1, 'cups': 2, 'championships': 1, 'champions_leagues': 1},
-    {'name': 'Bayern Munich', 'super_cups': 1, 'cups': 1, 'championships': 0, 'champions_leagues': 0},
-    {'name': 'Paris Saint-Germain', 'super_cups': 1, 'cups': 1, 'championships': 1, 'champions_leagues': 0},
-    {'name': 'Liverpool', 'super_cups': 0, 'cups': 0, 'championships': 0, 'champions_leagues': 0},
-    {'name': 'Juventus', 'super_cups': 2, 'cups': 1, 'championships': 2, 'champions_leagues': 1},
-    {'name': 'Chelsea', 'super_cups': 2, 'cups': 2, 'championships': 2, 'champions_leagues': 2},
-    {'name': 'Barcelona', 'super_cups': 1, 'cups': 0, 'championships': 1, 'champions_leagues': 0}
+    {'name': 'Manchester City', 'super_cup': 1, 'champion_league': 1, 'national_championship': 2, 'cup': 2,
+     'victories': 28, 'losses': 5, 'draws': 5},
+    {'name': 'Real Madrid', 'super_cup': 1, 'champion_league': 1, 'national_championship': 1, 'cup': 2, 'victories': 26,
+     'losses': 6, 'draws': 6},
+    {'name': 'Bayern Munich', 'super_cup': 1, 'champion_league': 0, 'national_championship': 0, 'cup': 1,
+     'victories': 24, 'losses': 4, 'draws': 10},
+    {'name': 'Paris Saint-Germain', 'super_cup': 1, 'champion_league': 0, 'national_championship': 1, 'cup': 1,
+     'victories': 26, 'losses': 4, 'draws': 8},
+    {'name': 'Liverpool', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 23,
+     'losses': 9, 'draws': 6},
+    {'name': 'Juventus', 'super_cup': 2, 'champion_league': 1, 'national_championship': 2, 'cup': 1, 'victories': 22,
+     'losses': 8, 'draws': 8},
+    {'name': 'Chelsea', 'super_cup': 2, 'champion_league': 2, 'national_championship': 2, 'cup': 2, 'victories': 21,
+     'losses': 10, 'draws': 7},
+    {'name': 'Barcelona', 'super_cup': 1, 'champion_league': 0, 'national_championship': 1, 'cup': 0, 'victories': 24,
+     'losses': 6, 'draws': 8},
+    {'name': 'Manchester United', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 1,
+     'victories': 20, 'losses': 12, 'draws': 6},
+    {'name': 'Arsenal', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 25,
+     'losses': 6, 'draws': 7},
+    {'name': 'Tottenham', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 18,
+     'losses': 11, 'draws': 9},
+    {'name': 'AC Milan', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 20,
+     'losses': 8, 'draws': 10},
+    {'name': 'Inter Milan', 'super_cup': 1, 'champion_league': 0, 'national_championship': 0, 'cup': 1, 'victories': 23,
+     'losses': 7, 'draws': 8},
+    {'name': 'Napoli', 'super_cup': 0, 'champion_league': 0, 'national_championship': 1, 'cup': 0, 'victories': 24,
+     'losses': 6, 'draws': 8},
+    {'name': 'Atletico Madrid', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 1,
+     'victories': 22, 'losses': 8, 'draws': 8},
+    {'name': 'Borussia Dortmund', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 1,
+     'victories': 21, 'losses': 6, 'draws': 11},
+    {'name': 'RB Leipzig', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 1, 'victories': 19,
+     'losses': 8, 'draws': 11},
+    {'name': 'Newcastle United', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0,
+     'victories': 18, 'losses': 10, 'draws': 10},
+    {'name': 'Aston Villa', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 17,
+     'losses': 12, 'draws': 9},
+    {'name': 'Brighton', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 16,
+     'losses': 13, 'draws': 9},
+    {'name': 'West Ham', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 1, 'victories': 15,
+     'losses': 14, 'draws': 9},
+    {'name': 'Sevilla', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 1, 'victories': 14,
+     'losses': 15, 'draws': 9},
+    {'name': 'Villarreal', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 16,
+     'losses': 12, 'draws': 10},
+    {'name': 'Real Sociedad', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0,
+     'victories': 18, 'losses': 10, 'draws': 10},
+    {'name': 'Benfica', 'super_cup': 0, 'champion_league': 0, 'national_championship': 1, 'cup': 1, 'victories': 25,
+     'losses': 3, 'draws': 10},
+    {'name': 'Porto', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 1, 'victories': 24,
+     'losses': 4, 'draws': 10},
+    {'name': 'Sporting Lisbon', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0,
+     'victories': 23, 'losses': 5, 'draws': 10},
+    {'name': 'Ajax', 'super_cup': 0, 'champion_league': 0, 'national_championship': 1, 'cup': 1, 'victories': 22,
+     'losses': 6, 'draws': 10},
+    {'name': 'PSV Eindhoven', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0,
+     'victories': 21, 'losses': 7, 'draws': 10},
+    {'name': 'Feyenoord', 'super_cup': 0, 'champion_league': 0, 'national_championship': 1, 'cup': 0, 'victories': 20,
+     'losses': 8, 'draws': 10},
+    {'name': 'Celtic', 'super_cup': 0, 'champion_league': 0, 'national_championship': 1, 'cup': 1, 'victories': 26,
+     'losses': 2, 'draws': 10},
+    {'name': 'Rangers', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 24,
+     'losses': 4, 'draws': 10},
+    {'name': 'Galatasaray', 'super_cup': 0, 'champion_league': 0, 'national_championship': 1, 'cup': 1, 'victories': 23,
+     'losses': 5, 'draws': 10},
+    {'name': 'Fenerbahce', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 22,
+     'losses': 6, 'draws': 10},
+    {'name': 'Besiktas', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 20,
+     'losses': 8, 'draws': 10},
+    {'name': 'Shakhtar Donetsk', 'super_cup': 0, 'champion_league': 0, 'national_championship': 1, 'cup': 1,
+     'victories': 19, 'losses': 9, 'draws': 10},
+    {'name': 'Dinamo Zagreb', 'super_cup': 0, 'champion_league': 0, 'national_championship': 1, 'cup': 0,
+     'victories': 21, 'losses': 7, 'draws': 10},
+    {'name': 'Red Bull Salzburg', 'super_cup': 0, 'champion_league': 0, 'national_championship': 1, 'cup': 1,
+     'victories': 22, 'losses': 6, 'draws': 10},
+    {'name': 'Bayer Leverkusen', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0,
+     'victories': 20, 'losses': 8, 'draws': 10},
+    {'name': 'Wolfsburg', 'super_cup': 0, 'champion_league': 0, 'national_championship': 0, 'cup': 0, 'victories': 18,
+     'losses': 10, 'draws': 10}
 ]
 
-WELCOME = '''
-Добро пожаловать в Футбольный бот!!!
+# Ссылки на приложение
+GUI_APP_PATHS = [
+    'http://192.168.1.105:5000',
+    'http://127.0.0.1:5000'
+]
+
+
+def get_db_connection():
+    """Получение подключения к БД с повторными попытками"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            connection = mysql.connect(**DB_CONFIG)
+            if connection.is_connected():
+                logger.info(f"Успешное подключение к БД Gold_medal (попытка {attempt + 1})")
+                return connection
+        except Error as e:
+            logger.error(f"Попытка {attempt + 1} подключения к БД не удалась: {e}")
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep(2)
+    return None
+
+
+def check_database_connection():
+    """Проверка подключения к БД и существования таблиц"""
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                # Проверяем существование основных таблиц
+                tables = ['bot_users', 'bot_sessions', 'bot_logs', 'footballers', 'clubs']
+                for table in tables:
+                    cursor.execute(f"SHOW TABLES LIKE '{table}'")
+                    if not cursor.fetchone():
+                        logger.warning(f"Таблица {table} не существует")
+        logger.info("Проверка БД завершена успешно")
+        return True
+    except Error as e:
+        logger.error(f"Ошибка проверки БД: {e}")
+        return False
+
+
+def register_bot_user(user_id, username, first_name, last_name):
+    """Регистрация пользователя бота в БД"""
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO bot_users (telegram_id, username, first_name, last_name) 
+                    VALUES (%s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE 
+                    username = COALESCE(VALUES(username), username),
+                    first_name = COALESCE(VALUES(first_name), first_name),
+                    last_name = COALESCE(VALUES(last_name), last_name)""",
+                    (user_id, username, first_name, last_name)
+                )
+                connection.commit()
+                logger.info(f"Зарегистрирован/обновлен пользователь бота: {user_id}")
+    except Error as e:
+        logger.error(f"Ошибка регистрации пользователя бота: {e}")
+
+
+def log_bot_action(user_id, action, details=""):
+    """Логирование действий пользователя бота на русском"""
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO bot_logs (telegram_id, action, details) VALUES (%s, %s, %s)",
+                    (user_id, action, details)
+                )
+                connection.commit()
+    except Error as e:
+        logger.error(f"Ошибка записи лога бота: {e}")
+
+
+def save_bot_session(user_id, session_data):
+    """Сохранение сессии пользователя"""
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                # Проверяем существование пользователя
+                cursor.execute("SELECT 1 FROM bot_users WHERE telegram_id = %s", (user_id,))
+                user_exists = cursor.fetchone()
+
+                if not user_exists:
+                    register_bot_user(user_id, None, None, None)
+
+                cursor.execute(
+                    """INSERT INTO bot_sessions (telegram_id, session_data) 
+                    VALUES (%s, %s) 
+                    ON DUPLICATE KEY UPDATE session_data = VALUES(session_data), last_activity = NOW()""",
+                    (user_id, json.dumps(session_data))
+                )
+                connection.commit()
+    except Error as e:
+        logger.error(f"Ошибка сохранения сессии: {e}")
+
+
+def get_bot_session(user_id):
+    """Загрузка сессии пользователя"""
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT session_data FROM bot_sessions WHERE telegram_id = %s",
+                    (user_id,)
+                )
+                result = cursor.fetchone()
+                return json.loads(result[0]) if result else {}
+    except Error as e:
+        logger.error(f"Ошибка загрузки сессии: {e}")
+        return {}
+
+
+def clear_bot_session(user_id):
+    """Очистка сессии пользователя"""
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM bot_sessions WHERE telegram_id = %s",
+                    (user_id,)
+                )
+                connection.commit()
+    except Error as e:
+        logger.error(f"Ошибка очистки сессии: {e}")
+
+
+# Клавиатуры с эмодзи
+def get_main_menu():
+    menu = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    menu.add(
+        KeyboardButton('🎲 Случайный футболист'),
+        KeyboardButton('🎯 Случайный клуб'),
+        KeyboardButton('📊 Моя статистика'),
+        KeyboardButton('👑 Топ игроки'),
+        KeyboardButton('🌐 Открыть приложение'),
+        KeyboardButton('ℹ️ Помощь')
+    )
+    return menu
+
+
+WELCOME_TEXT = """
+⚽ Добро пожаловать в Футбольный бот! 🎉
+
 Этот бот предназначен для голосования в номинации "Золотой мяч".
 Он нужен для отслеживания и управления статистикой футболистов и клубов.
-Вы можете добавлять данные о голах, ассистах, сухих матчах для игроков, а также о трофеях (суперкубки, кубки, чемпионаты, лиги чемпионов) для клубов, привязывая их к конкретным датам.
+
 Основные возможности:
-- Добавление данных вручную или с помощью случайных примеров известных игроков/клубов.
-- Просмотр всех записей или по выбранной дате.
-- Сохраниение данных в файл.
-- Открытие GUI приложения "БД футбол" для просмотра и продолжения регистрации данных в графическом интерфейсе.
-Используйте только кнопки меню!!!
-'''
+• 🎲 Получить случайного футболиста
+• 🎯 Получить случайный клуб  
+• 💾 Сохранять данные в базу
+• 📊 Просматривать свою статистику
+• 👑 Смотреть топ игроков
 
-players = dict()  # date -> list of {'name': str, 'goals': int, 'assists': int, 'clean_sheets': int}
-clubs = dict()    # date -> list of {'name': str, 'super_cups': int, 'cups': int, 'championships': int, 'champions_leagues': int}
+Выберите действие из меню ниже 👇
+"""
 
-user_states = {}
+HELP_TEXT = """
+🆘 Справка по боту
 
-MAIN_MENU = ReplyKeyboardMarkup(resize_keyboard=True)
-MAIN_MENU.add(KeyboardButton('⚽️ Добавить игрока'), KeyboardButton('🏟️ Добавить клуб'))
-MAIN_MENU.add(KeyboardButton('👕 Случайный игрок'), KeyboardButton('🥅 Случайный клуб'))
-MAIN_MENU.add(KeyboardButton('🥇 Показать игроков'), KeyboardButton('🥇 Показать клуб'))
-MAIN_MENU.add(KeyboardButton('💾 Сохранить'), KeyboardButton('📱 Открыть приложение'))
-MAIN_MENU.add(KeyboardButton('🆘 Помощь'))
+Случайный футболист:
+• Нажмите "🎲 Случайный футболиста"
+• Бот выберет случайного игрока из базы
+• Игрок автоматически добавится в базу
 
-HELP = '''
-Список доступных действий (используйте кнопки):
-- Добавить Игрока /add_player: шаговый ввод через кнопки или команда /add_player <date> <player_name> <goals> <assists> <clean_sheets>
-- Добавить Клуб /add_club: шаговый ввод через кнопки или команда /add_club <date> <club_name> <super_cups> <cups> <championships> <champions_leagues>
-- Случайный Игрок /random_player
-- Случайный Клуб /random_club
-- Показать Игроков /print_player [<date>]
-- Показать Клубы /print_club [<date>]
-- Сохранить в файл /save
-- Открыть приложение /open_app (откроет ссылку на GUI "БД футбол" в браузере)
-'''
+Случайный клуб:
+• Нажмите "🎯 Случайный клуб"  
+• Бот выберет случайный клуб из базы
+• Клуб автоматически добавится в базу
 
-def add_player(date, player_name, goals, assists, clean_sheets):
-    date = date.lower().strip()
-    if not date:
-        raise ValueError("Дата не может быть пустой")
-    if date not in players:
-        players[date] = []
-    players[date].append({'name': player_name, 'goals': goals, 'assists': assists, 'clean_sheets': clean_sheets})
+Функционал:
+• Все данные сохраняются в базу
+• Просмотр вашей статистики
+• Топ игроков по голам и ассистам
+• Логирование всех действий
 
-def add_club(date, club_name, super_cups, cups, championships, champions_leagues):
-    date = date.lower().strip()
-    if not date:
-        raise ValueError("Дата не может быть пустой")
-    if date not in clubs:
-        clubs[date] = []
-    clubs[date].append({'name': club_name, 'super_cups': super_cups, 'cups': cups, 'championships': championships, 'champions_leagues': champions_leagues})
+Используйте кнопки меню для навигации!
+"""
 
-def parse_name_and_params(parts, num_params):
-    if len(parts) < 2 + num_params:
-        return None, None
-    params = parts[-num_params:]
-    name_parts = parts[2:-num_params]
-    name = ' '.join(name_parts).strip()
-    if not name:
-        return None, None
-    try:
-        param_values = [int(p) for p in params]
-        if any(param < 0 for param in param_values):
-            return None, None
-    except ValueError:
-        return None, None
-    return name, param_values
-
-def get_user_state(user_id):
-    return user_states.get(user_id, {})
-
-def set_user_state(user_id, state):
-    user_states[user_id] = state
-
-def clear_user_state(user_id):
-    if user_id in user_states:
-        del user_states[user_id]
 
 @bot.message_handler(commands=['start', 'help'])
 def start_help_command(message):
-    bot.send_message(message.chat.id, WELCOME, reply_markup=MAIN_MENU)
-    bot.send_message(message.chat.id, HELP, reply_markup=MAIN_MENU)
+    user = message.from_user
+    register_bot_user(user.id, user.username, user.first_name, user.last_name)
+    log_bot_action(user.id, "Запуск бота")
+
+    if message.text == '/start':
+        bot.send_message(message.chat.id, WELCOME_TEXT, reply_markup=get_main_menu())
+    else:
+        bot.send_message(message.chat.id, HELP_TEXT, reply_markup=get_main_menu())
+
+
+@bot.message_handler(func=lambda message: message.text == '🎲 Случайный футболист')
+def get_random_player(message):
+    user_id = message.from_user.id
+
+    # Выбираем случайного игрока
+    selected_player = random.choice(RANDOM_TASKS_PLAYERS)
+
+    try:
+        # Показываем полную информацию
+        player_info = f"""
+📋 СЛУЧАЙНЫЙ ФУТБОЛИСТ:
+
+👤 Имя: {selected_player['first_name']} {selected_player['last_name']}
+🎂 Возраст: {selected_player['age']}
+🏢 Клуб: {selected_player['club']}
+⚽ Голы: {selected_player['goals']}
+🎯 Ассисты: {selected_player['assists']}
+🧤 Сухие матчи: {selected_player['clean_sheets']}
+✅ Победы: {selected_player['victories']}
+❌ Поражения: {selected_player['losses']}
+🤝 Ничьи: {selected_player['draws']}
+🎩 Коэффициент: {selected_player['gentleman_coef']}
+        """
+
+        bot.send_message(message.chat.id, player_info)
+
+        # Сохраняем в базу
+        save_player_to_db(user_id, selected_player)
+
+        confirmation = f"""
+✅ ФУТБОЛИСТ УСПЕШНО СОХРАНЕН В БАЗУ ДАННЫХ!
+
+💾 Данные футболиста {selected_player['first_name']} {selected_player['last_name']} 
+были успешно добавлены в базу данных Gold_medal.
+        """
+
+        bot.send_message(message.chat.id, confirmation, reply_markup=get_main_menu())
+        log_bot_action(user_id, "Случайный футболист добавлен",
+                       f"{selected_player['first_name']} {selected_player['last_name']}")
+
+    except Error as e:
+        logger.error(f"Ошибка добавления футболиста: {e}")
+        bot.send_message(message.chat.id,
+                         "❌ Ошибка при добавлении футболиста.",
+                         reply_markup=get_main_menu())
+
+
+@bot.message_handler(func=lambda message: message.text == '🎯 Случайный клуб')
+def get_random_club(message):
+    user_id = message.from_user.id
+
+    # Выбираем случайный клуб
+    selected_club = random.choice(RANDOM_TASKS_CLUBS)
+
+    try:
+        # Показываем полную информацию
+        club_info = f"""
+🏢 СЛУЧАЙНЫЙ КЛУБ:
+
+🏷️ Название: {selected_club['name']}
+🏆 Суперкубки: {selected_club['super_cup']}
+⭐ Лиги чемпионов: {selected_club['champion_league']}
+🥇 Чемпионаты: {selected_club['national_championship']}
+🏅 Кубки: {selected_club['cup']}
+✅ Победы: {selected_club['victories']}
+❌ Поражения: {selected_club['losses']}
+🤝 Ничьи: {selected_club['draws']}
+        """
+
+        bot.send_message(message.chat.id, club_info)
+
+        # Сохраняем в базу
+        save_club_to_db(user_id, selected_club)
+
+        confirmation = f"""
+✅ КЛУБ УСПЕШНО СОХРАНЕН В БАЗУ ДАННЫХ!
+
+💾 Данные клуба {selected_club['name']} 
+были успешно добавлены в базу данных Gold_medal.
+        """
+
+        bot.send_message(message.chat.id, confirmation, reply_markup=get_main_menu())
+        log_bot_action(user_id, "Случайный клуб добавлен", selected_club['name'])
+
+    except Error as e:
+        logger.error(f"Ошибка добавления клуба: {e}")
+        bot.send_message(message.chat.id,
+                         "❌ Ошибка при добавлении клуба.",
+                         reply_markup=get_main_menu())
+
+
+def save_player_to_db(user_id, player_data):
+    """Сохранение футболиста в базу данных Gold_medal"""
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                # Вставляем футболиста
+                cursor.execute(
+                    """INSERT INTO footballers(first_name, last_name, age, club, image_path) 
+                    VALUES (%s, %s, %s, %s, NULL)""",
+                    (player_data['first_name'], player_data['last_name'], player_data['age'], player_data['club'])
+                )
+
+                # Вставляем статистику
+                cursor.execute(
+                    "INSERT INTO personal_stats(player_name, goals, assists, clean_sheets) VALUES (%s, %s, %s, %s)",
+                    (player_data['last_name'], player_data.get('goals', 0), player_data.get('assists', 0),
+                     player_data.get('clean_sheets', 0))
+                )
+
+                # Вставляем результаты матчей
+                cursor.execute(
+                    "INSERT INTO players(player_name, victories, losses, draws) VALUES (%s, %s, %s, %s)",
+                    (player_data['last_name'], player_data.get('victories', 0), player_data.get('losses', 0),
+                     player_data.get('draws', 0))
+                )
+
+                # Вставляем коэффициент джентльмена
+                cursor.execute(
+                    "INSERT INTO gentleman_coefficient(coefficient, footballer) VALUES (%s, %s)",
+                    (player_data.get('gentleman_coef', 1.0), f"{player_data['first_name']} {player_data['last_name']}")
+                )
+
+                connection.commit()
+                logger.info(f"Футболист {player_data['first_name']} {player_data['last_name']} сохранен в БД")
+                log_bot_action(user_id, "Сохранение футболиста в БД",
+                               f"{player_data['first_name']} {player_data['last_name']}")
+    except Error as e:
+        logger.error(f"Ошибка сохранения футболиста в БД: {e}")
+        log_bot_action(user_id, "Ошибка сохранения футболиста", str(e))
+        raise e
+
+
+def save_club_to_db(user_id, club_data):
+    """Сохранение клуба в базу данных Gold_medal"""
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id FROM clubs WHERE club_name = %s", (club_data['name'],))
+                club_exists = cursor.fetchone()
+
+                if club_exists:
+                    club_id = club_exists[0]
+                    cursor.execute(
+                        """UPDATE clubs SET 
+                        super_cup = %s, 
+                        champion_league = %s,
+                        national_championship = %s, 
+                        cup = %s,
+                        victories = %s,
+                        losses = %s,
+                        draws = %s
+                        WHERE id = %s""",
+                        (club_data.get('super_cup', 0), club_data.get('champion_league', 0),
+                         club_data.get('national_championship', 0), club_data.get('cup', 0),
+                         club_data.get('victories', 0), club_data.get('losses', 0),
+                         club_data.get('draws', 0), club_id)
+                    )
+                else:
+                    cursor.execute(
+                        """INSERT INTO clubs(super_cup, champion_league, national_championship, cup,
+                        victories, losses, draws, club_name, image_path)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)""",
+                        (club_data.get('super_cup', 0), club_data.get('champion_league', 0),
+                         club_data.get('national_championship', 0), club_data.get('cup', 0),
+                         club_data.get('victories', 0), club_data.get('losses', 0),
+                         club_data.get('draws', 0), club_data['name'])
+                    )
+                    club_id = cursor.lastrowid
+
+                connection.commit()
+                logger.info(f"Клуб {club_data['name']} сохранен в БД")
+                log_bot_action(user_id, "Сохранение клуба в БД", club_data['name'])
+    except Error as e:
+        logger.error(f"Ошибка сохранения клуба в БД: {e}")
+        log_bot_action(user_id, "Ошибка сохранения клуба", str(e))
+        raise e
+
+
+@bot.message_handler(func=lambda message: message.text == '👑 Топ игроки')
+def show_top_players(message):
+    user_id = message.from_user.id
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                # Проверяем существование таблицы golden_ball и получаем текущего победителя
+                cursor.execute("SHOW TABLES LIKE 'golden_ball'")
+                golden_ball_table_exists = cursor.fetchone()
+
+                current_golden_ball_winner = None
+                if golden_ball_table_exists:
+                    cursor.execute("""
+                        SELECT holder, created_at 
+                        FROM golden_ball 
+                        ORDER BY created_at DESC 
+                        LIMIT 1
+                    """)
+                    current_golden_ball_winner = cursor.fetchone()
+
+                # Лучший бомбардир
+                cursor.execute("""
+                    SELECT f.first_name, f.last_name, f.club, ps.goals, ps.assists, ps.clean_sheets
+                    FROM footballers f
+                    JOIN personal_stats ps ON f.last_name = ps.player_name
+                    WHERE ps.goals > 0
+                    ORDER BY ps.goals DESC, ps.assists DESC
+                    LIMIT 3
+                """)
+                top_scorers = cursor.fetchall()
+
+                # Лучший ассистент
+                cursor.execute("""
+                    SELECT f.first_name, f.last_name, f.club, ps.assists, ps.goals, ps.clean_sheets
+                    FROM footballers f
+                    JOIN personal_stats ps ON f.last_name = ps.player_name
+                    WHERE ps.assists > 0
+                    ORDER BY ps.assists DESC, ps.goals DESC
+                    LIMIT 3
+                """)
+                top_assistants = cursor.fetchall()
+
+                # Лучший по чистым матчам (вратари/защитники)
+                cursor.execute("""
+                    SELECT f.first_name, f.last_name, f.club, ps.clean_sheets, ps.goals, ps.assists
+                    FROM footballers f
+                    JOIN personal_stats ps ON f.last_name = ps.player_name
+                    WHERE ps.clean_sheets > 0
+                    ORDER BY ps.clean_sheets DESC, ps.goals DESC
+                    LIMIT 3
+                """)
+                top_clean_sheets = cursor.fetchall()
+
+                # Кандидаты на Золотой мяч (по комбинированной статистике)
+                cursor.execute("""
+                    SELECT f.first_name, f.last_name, f.club, 
+                           (COALESCE(ps.goals, 0) * 2 + COALESCE(ps.assists, 0) * 1.5 + 
+                            COALESCE(ps.clean_sheets, 0) * 1.2 + COALESCE(gc.coefficient, 1)) as score,
+                           COALESCE(ps.goals, 0) as goals, 
+                           COALESCE(ps.assists, 0) as assists, 
+                           COALESCE(ps.clean_sheets, 0) as clean_sheets, 
+                           COALESCE(gc.coefficient, 1) as coef
+                    FROM footballers f
+                    LEFT JOIN personal_stats ps ON f.last_name = ps.player_name
+                    LEFT JOIN gentleman_coefficient gc ON f.first_name = SUBSTRING_INDEX(gc.footballer, ' ', 1) 
+                                                  AND f.last_name = SUBSTRING_INDEX(gc.footballer, ' ', -1)
+                    WHERE ps.goals > 0 OR ps.assists > 0 OR ps.clean_sheets > 0
+                    ORDER BY score DESC
+                    LIMIT 5
+                """)
+                golden_ball_candidates = cursor.fetchall()
+
+                # Топ по коэффициенту джентльмена
+                cursor.execute("""
+                    SELECT f.first_name, f.last_name, f.club, gc.coefficient
+                    FROM footballers f
+                    JOIN gentleman_coefficient gc ON f.first_name = SUBSTRING_INDEX(gc.footballer, ' ', 1) 
+                                              AND f.last_name = SUBSTRING_INDEX(gc.footballer, ' ', -1)
+                    WHERE gc.coefficient > 0
+                    ORDER BY gc.coefficient DESC
+                    LIMIT 3
+                """)
+                top_gentlemen = cursor.fetchall()
+
+                # История победителей Золотого мяча (если таблица существует)
+                golden_ball_history = []
+                if golden_ball_table_exists:
+                    cursor.execute("""
+                        SELECT holder, created_at 
+                        FROM golden_ball 
+                        ORDER BY created_at DESC 
+                        LIMIT 5
+                    """)
+                    golden_ball_history = cursor.fetchall()
+
+                # Подсчет общего количества игроков
+                cursor.execute("SELECT COUNT(*) FROM footballers")
+                total_players = cursor.fetchone()[0]
+
+        response = "🏆 ТОП ИГРОКИ СЕЗОНА 🏆\n\n"
+
+        # Текущий обладатель Золотого мяча (из таблицы golden_ball)
+        if current_golden_ball_winner:
+            holder, created_at = current_golden_ball_winner
+            # Форматируем дату для лучшего отображения
+            created_date = created_at.strftime("%d.%m.%Y") if created_at else "Неизвестно"
+            response += "🏅 ТЕКУЩИЙ ОБЛАДАТЕЛЬ ЗОЛОТОГО МЯЧА:\n"
+            response += f"👤 {holder}\n"
+            response += f"📅 Получен: {created_date}\n\n"
+        else:
+            response += "🏅 Обладатель Золотого мяча: определяется по итогам сезона\n\n"
+
+        # Кандидаты на Золотой мяч в текущем сезоне
+        if golden_ball_candidates:
+            response += "🔥 КАНДИДАТЫ НА ЗОЛОТОЙ МЯЧ В ТЕКУЩЕМ СЕЗОНЕ:\n"
+            for i, (first_name, last_name, club, score, goals, assists, clean_sheets, coef) in enumerate(
+                    golden_ball_candidates[:3]):
+                medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
+                response += f"{medal} {first_name} {last_name} - {club}\n"
+                response += f"   ⭐ Рейтинг: {score:.1f} | ⚽ {goals} | 🎯 {assists} | 🧤 {clean_sheets} | 🎩 {coef:.1f}\n"
+
+            # Показать остальных кандидатов (4-5 места)
+            if len(golden_ball_candidates) > 3:
+                response += "\n📊 Также в топе:\n"
+                for i in range(3, min(5, len(golden_ball_candidates))):
+                    first_name, last_name, club, score, goals, assists, clean_sheets, coef = golden_ball_candidates[i]
+                    response += f"#{i + 1} {first_name} {last_name} - {club} ({score:.1f})\n"
+            response += "\n"
+        else:
+            response += "🔥 Кандидаты на Золотой мяч: статистика отсутствует\n\n"
+
+        # Топ бомбардиры
+        if top_scorers:
+            response += "⚽ ТОП БОМБАРДИРЫ:\n"
+            for i, (first_name, last_name, club, goals, assists, clean_sheets) in enumerate(top_scorers[:3]):
+                medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
+                response += f"{medal} {first_name} {last_name} - {club}\n"
+                response += f"   ⚽ Голы: {goals} | 🎯 Ассисты: {assists} | 🧤 Чистые: {clean_sheets}\n"
+            response += "\n"
+        else:
+            response += "⚽ Топ бомбардиры: статистика отсутствует\n\n"
+
+        # Топ ассистенты
+        if top_assistants:
+            response += "🎯 ТОП АССИСТЕНТЫ:\n"
+            for i, (first_name, last_name, club, assists, goals, clean_sheets) in enumerate(top_assistants[:3]):
+                medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
+                response += f"{medal} {first_name} {last_name} - {club}\n"
+                response += f"   🎯 Ассисты: {assists} | ⚽ Голы: {goals} | 🧤 Чистые: {clean_sheets}\n"
+            response += "\n"
+        else:
+            response += "🎯 Топ ассистенты: статистика отсутствует\n\n"
+
+        # Топ по чистым матчам
+        if top_clean_sheets:
+            response += "🧤 ТОП ПО ЧИСТЫМ МАТЧАМ:\n"
+            for i, (first_name, last_name, club, clean_sheets, goals, assists) in enumerate(top_clean_sheets[:3]):
+                medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
+                response += f"{medal} {first_name} {last_name} - {club}\n"
+                response += f"   🧤 Чистые матчи: {clean_sheets} | ⚽ Голы: {goals} | 🎯 Ассисты: {assists}\n"
+            response += "\n"
+        else:
+            response += "🧤 Топ по чистым матчам: статистика отсутствует\n\n"
+
+        # Топ джентльмены
+        if top_gentlemen:
+            response += "🎩 ТОП ДЖЕНТЛЬМЕНЫ:\n"
+            for i, (first_name, last_name, club, coefficient) in enumerate(top_gentlemen[:3]):
+                medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
+                response += f"{medal} {first_name} {last_name} - {club}\n"
+                response += f"   🎩 Коэффициент: {coefficient:.1f}\n"
+            response += "\n"
+        else:
+            response += "🎩 Топ джентльмены: статистика отсутствует\n\n"
+
+        # История Золотого мяча
+        if golden_ball_history:
+            response += "📜 ИСТОРИЯ ЗОЛОТОГО МЯЧА (последние награждения):\n"
+            for holder, created_at in golden_ball_history:
+                created_date = created_at.strftime("%d.%m.%Y") if created_at else "Неизвестно"
+                response += f"🏆 {created_date}: {holder}\n"
+            response += "\n"
+
+        # Информация об обновлении
+        response += f"🔄 Рейтинги обновляются автоматически"
+        response += f"\n📊 Всего игроков в базе: {total_players}"
+
+        if current_golden_ball_winner:
+            response += f"\n⭐ Текущий победитель: {current_golden_ball_winner[0]}"
+
+        # Проверяем длину сообщения (ограничение Telegram ~4096 символов)
+        if len(response) > 4000:
+            response = response[:3990] + "\n\n... (сообщение сокращено)"
+
+        bot.send_message(message.chat.id, response, reply_markup=get_main_menu())
+        log_bot_action(user_id, "Просмотр топа игроков")
+
+    except Error as e:
+        logger.error(f"Ошибка получения топ игроков: {e}")
+        bot.send_message(message.chat.id,
+                         "❌ Ошибка при получении данных о топ игроках.",
+                         reply_markup=get_main_menu())
+
+@bot.message_handler(func=lambda message: message.text == '📊 Моя статистика')
+def show_user_stats(message):
+    user_id = message.from_user.id
+
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT action, COUNT(*) FROM bot_logs WHERE telegram_id = %s GROUP BY action",
+                    (user_id,)
+                )
+                actions = cursor.fetchall() or []
+
+                cursor.execute(
+                    "SELECT action, details, created_at FROM bot_logs WHERE telegram_id = %s ORDER BY created_at DESC LIMIT 5",
+                    (user_id,)
+                )
+                recent_actions = cursor.fetchall() or []
+
+                cursor.execute(
+                    "SELECT COUNT(*) FROM bot_logs WHERE telegram_id = %s AND action IN ('Сохранение футболиста в БД', 'Сохранение клуба в БД', 'Случайный футболист добавлен', 'Случайный клуб добавлен')",
+                    (user_id,)
+                )
+                added_records_result = cursor.fetchone()
+                added_records = added_records_result[0] if added_records_result else 0
+
+        stats_text = "📊 Ваша статистика:\n\n"
+
+        if actions:
+            stats_text += "📈 Количество действий:\n"
+            for action, count in actions:
+                stats_text += f"• {action}: {count}\n"
+        else:
+            stats_text += "📭 У вас пока нет действий.\n"
+
+        stats_text += f"\n💾 Всего добавлено записей: {added_records}\n"
+
+        if recent_actions:
+            stats_text += "\n🕒 Последние действия:\n"
+            for action, details, created_at in recent_actions:
+                time_str = created_at.strftime('%d.%m %H:%M') if created_at else 'N/A'
+                details_text = f": {details}" if details else ""
+                stats_text += f"• {action}{details_text} ({time_str})\n"
+
+        bot.send_message(message.chat.id, stats_text)
+        log_bot_action(user_id, "Просмотр статистики")
+
+    except Error as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        bot.send_message(message.chat.id,
+                         "❌ Ошибка при получении статистики.",
+                         reply_markup=get_main_menu())
+
+
+@bot.message_handler(func=lambda message: message.text == '🌐 Открыть приложение')
+def show_app_link(message):
+    user_id = message.from_user.id
+
+    app_links = "🌐 Веб-приложение доступно по ссылкам:\n\n"
+    for i, link in enumerate(GUI_APP_PATHS, 1):
+        app_links += f"{i}. {link}\n"
+
+    app_links += "\nТам вы найдете расширенный функционал и статистику!"
+
+    bot.send_message(message.chat.id, app_links, reply_markup=get_main_menu())
+    log_bot_action(user_id, "Просмотр ссылок на приложение")
+
+
+@bot.message_handler(func=lambda message: message.text == 'ℹ️ Помощь')
+def show_help(message):
+    bot.send_message(message.chat.id, HELP_TEXT, reply_markup=get_main_menu())
+    log_bot_action(message.from_user.id, "Просмотр справки")
+
 
 @bot.message_handler(func=lambda message: True)
-def handle_menu_buttons(message):
+def handle_all_messages(message):
     user_id = message.from_user.id
-    text = message.text.strip()
 
-    if text == '🆘 Помощь':
-        bot.send_message(message.chat.id, HELP, reply_markup=MAIN_MENU)
-        return
-
-    if text == '⚽️ Добавить игрока':
-        set_user_state(user_id, {'action': 'add_player', 'step': 'date'})
-        bot.send_message(message.chat.id, 'Введите дату (например, "сегодня" или "01.01.2024"):')
-        return
-
-    if text == '🏟️ Добавить клуб':
-        set_user_state(user_id, {'action': 'add_club', 'step': 'date'})
-        bot.send_message(message.chat.id, 'Введите дату (например, "сегодня" или "01.01.2024"):')
-        return
-
-    if text == '👕 Случайный игрок':
-        player_data = choice(RANDOM_TASKS_PLAYERS)
-        add_player('сегодня', player_data['name'], player_data['goals'], player_data['assists'], player_data['clean_sheets'])
-        bot.send_message(message.chat.id, f'Футболист {player_data["name"]} добавлен на сегодня ({player_data["goals"]} голов, {player_data["assists"]} ассистов, {player_data["clean_sheets"]} сухих матчей)', reply_markup=MAIN_MENU)
-        return
-
-    if text == '🥅 Случайный клуб':
-        club_data = choice(RANDOM_TASKS_CLUBS)
-        add_club('сегодня', club_data['name'], club_data['super_cups'], club_data['cups'], club_data['championships'], club_data['champions_leagues'])
-        bot.send_message(message.chat.id, f'Клуб {club_data["name"]} добавлен на сегодня ({club_data["super_cups"]} суперкубков, {club_data["cups"]} кубков, {club_data["championships"]} чемпионатов, {club_data["champions_leagues"]} лиг чемпионов)', reply_markup=MAIN_MENU)
-        return
-
-    if text == '🥇 Показать игроков':
-        if not players:
-            output = 'Футболистов нет'
-        else:
-            output = "Все футболисты по датам:\n\n"
-            for date in sorted(players.keys()):
-                output += f"Дата: {date}\n"
-                for p in players[date]:
-                    output += f'{p["name"]}: {p["goals"]} голов, {p["assists"]} ассистов, {p["clean_sheets"]} сухих матчей\n'
-                output += '\n'
-        bot.send_message(message.chat.id, output, reply_markup=MAIN_MENU)
-        return
-
-    if text == '🥇 Показать клуб':
-        if not clubs:
-            output = 'Клубов нет'
-        else:
-            output = "Все клубы по датам:\n\n"
-            for date in sorted(clubs.keys()):
-                output += f"Дата: {date}\n"
-                for c in clubs[date]:
-                    output += f'{c["name"]}: {c["super_cups"]} суперкубков, {c["cups"]} кубков, {c["championships"]} чемпионатов, {c["champions_leagues"]} лиг чемпионов\n'
-                output += '\n'
-        bot.send_message(message.chat.id, output, reply_markup=MAIN_MENU)
-        return
-
-    if text == '💾 Сохранить':
-        save_to_file(message)
-        return
-
-    if text == '📱 Открыть приложение':
-        bot.send_message(message.chat.id, "⚠️ <b>ВНИМАНИЕ: Ссылка на приложение</b> ⚠️", parse_mode='HTML')
-        bot.send_message(message.chat.id, f"🔗 {GUI_APP_PATH}", reply_markup=MAIN_MENU)
-        return
-
-    state = get_user_state(user_id)
-    if not state:
-        bot.send_message(message.chat.id, 'Неизвестная команда. Используйте кнопки меню.', reply_markup=MAIN_MENU)
-        return
-
-    if state['action'] == 'add_player':
-        handle_add_player_step(message, state)
-    elif state['action'] == 'add_club':
-        handle_add_club_step(message, state)
-
-def handle_add_player_step(message, state):
-    user_id = message.from_user.id
-    text = message.text.strip()
-
-    if state['step'] == 'date':
-        if not text:
-            bot.send_message(message.chat.id, 'Дата не может быть пустой. Введите дату:')
-            return
-        state['date'] = text.lower()
-        state['step'] = 'name'
-        bot.send_message(message.chat.id, 'Введите имя футболиста (может содержать пробелы):')
-    elif state['step'] == 'name':
-        if not text:
-            bot.send_message(message.chat.id, 'Имя не может быть пустым. Введите имя:')
-            return
-        state['name'] = text
-        state['step'] = 'goals'
-        bot.send_message(message.chat.id, 'Введите количество голов (неотрицательное целое число):')
-    elif state['step'] == 'goals':
-        try:
-            goals = int(text)
-            if goals < 0:
-                raise ValueError
-            state['goals'] = goals
-            state['step'] = 'assists'
-            bot.send_message(message.chat.id, 'Введите количество ассистов (неотрицательное целое число):')
-        except ValueError:
-            bot.send_message(message.chat.id, 'Неверное значение. Введите неотрицательное целое число для голов:')
-            return
-    elif state['step'] == 'assists':
-        try:
-            assists = int(text)
-            if assists < 0:
-                raise ValueError
-            state['assists'] = assists
-            state['step'] = 'clean_sheets'
-            bot.send_message(message.chat.id, 'Введите количество сухих матчей (неотрицательное целое число):')
-        except ValueError:
-            bot.send_message(message.chat.id, 'Неверное значение. Введите неотрицательное целое число для ассистов:')
-            return
-    elif state['step'] == 'clean_sheets':
-        try:
-            clean_sheets = int(text)
-            if clean_sheets < 0:
-                raise ValueError
-            add_player(state['date'], state['name'], state['goals'], state['assists'], clean_sheets)
-            bot.send_message(message.chat.id, f'Футболист "{state["name"]}" добавлен на дату {state["date"]} ({state["goals"]} голов, {state["assists"]} ассистов, {clean_sheets} сухих матчей)', reply_markup=MAIN_MENU)
-            clear_user_state(user_id)
-        except ValueError as e:
-            bot.send_message(message.chat.id, f'Ошибка: {str(e)}')
-            clear_user_state(user_id)
-
-def handle_add_club_step(message, state):
-    user_id = message.from_user.id
-    text = message.text.strip()
-
-    if state['step'] == 'date':
-        if not text:
-            bot.send_message(message.chat.id, 'Дата не может быть пустой. Введите дату:')
-            return
-        state['date'] = text.lower()
-        state['step'] = 'name'
-        bot.send_message(message.chat.id, 'Введите имя клуба (может содержать пробелы):')
-    elif state['step'] == 'name':
-        if not text:
-            bot.send_message(message.chat.id, 'Имя не может быть пустым. Введите имя:')
-            return
-        state['name'] = text
-        state['step'] = 'super_cups'
-        bot.send_message(message.chat.id, 'Введите количество суперкубков (неотрицательное целое число):')
-    elif state['step'] == 'super_cups':
-        try:
-            super_cups = int(text)
-            if super_cups < 0:
-                raise ValueError
-            state['super_cups'] = super_cups
-            state['step'] = 'cups'
-            bot.send_message(message.chat.id, 'Введите количество кубков (неотрицательное целое число):')
-        except ValueError:
-            bot.send_message(message.chat.id, 'Неверное значение. Введите неотрицательное целое число для суперкубков:')
-            return
-    elif state['step'] == 'cups':
-        try:
-            cups = int(text)
-            if cups < 0:
-                raise ValueError
-            state['cups'] = cups
-            state['step'] = 'championships'
-            bot.send_message(message.chat.id, 'Введите количество чемпионатов (неотрицательное целое число):')
-        except ValueError:
-            bot.send_message(message.chat.id, 'Неверное значение. Введите неотрицательное целое число для кубков:')
-            return
-    elif state['step'] == 'championships':
-        try:
-            championships = int(text)
-            if championships < 0:
-                raise ValueError
-            state['championships'] = championships
-            state['step'] = 'champions_leagues'
-            bot.send_message(message.chat.id, 'Введите количество лиг чемпионов (неотрицательное целое число):')
-        except ValueError:
-            bot.send_message(message.chat.id, 'Неверное значение. Введите неотрицательное целое число для чемпионатов:')
-            return
-    elif state['step'] == 'champions_leagues':
-        try:
-            champions_leagues = int(text)
-            if champions_leagues < 0:
-                raise ValueError
-            add_club(state['date'], state['name'], state['super_cups'], state['cups'], state['championships'], champions_leagues)
-            bot.send_message(message.chat.id, f'Клуб "{state["name"]}" добавлен на дату {state["date"]} ({state["super_cups"]} суперкубков, {state["cups"]} кубков, {state["championships"]} чемпионатов, {champions_leagues} лиг чемпионов)', reply_markup=MAIN_MENU)
-            clear_user_state(user_id)
-        except ValueError as e:
-            bot.send_message(message.chat.id, f'Ошибка: {str(e)}')
-            clear_user_state(user_id)
-
-@bot.message_handler(commands=['random_player'])
-def random_player(message):
-    player_data = choice(RANDOM_TASKS_PLAYERS)
-    add_player('сегодня', player_data['name'], player_data['goals'], player_data['assists'], player_data['clean_sheets'])
-    bot.send_message(message.chat.id, f'Футболист {player_data["name"]} добавлен на сегодня ({player_data["goals"]} голов, {player_data["assists"]} ассистов, {player_data["clean_sheets"]} сухих матчей)', reply_markup=MAIN_MENU)
-
-@bot.message_handler(commands=['random_club'])
-def random_club(message):
-    club_data = choice(RANDOM_TASKS_CLUBS)
-    add_club('сегодня', club_data['name'], club_data['super_cups'], club_data['cups'], club_data['championships'], club_data['champions_leagues'])
-    bot.send_message(message.chat.id, f'Клуб {club_data["name"]} добавлен на сегодня ({club_data["super_cups"]} суперкубков, {club_data["cups"]} кубков, {club_data["championships"]} чемпионатов, {club_data["champions_leagues"]} лиг чемпионов)', reply_markup=MAIN_MENU)
-
-@bot.message_handler(commands=['add_player'])
-def add_player_handler(message):
-    parts = message.text.split()
-    if len(parts) < 6:
-        bot.send_message(message.chat.id, "Неправильный формат. Используйте: /add_player <date> <player_name> <goals> <assists> <clean_sheets>")
-        return
-    date = parts[1].lower().strip()
-    if not date:
-        bot.send_message(message.chat.id, "Дата не может быть пустой!")
-        return
-    name, params = parse_name_and_params(parts, 3)
-    if name is None or len(params) != 3:
-        bot.send_message(message.chat.id, "Неправильный формат. Укажите имя, затем три неотрицательных целых числа (goals, assists, clean_sheets).")
-        return
-    goals, assists, clean_sheets = params
     try:
-        add_player(date, name, goals, assists, clean_sheets)
-        bot.send_message(message.chat.id, f'Футболист "{name}" добавлен на дату {date} ({goals} голов, {assists} ассистов, {clean_sheets} сухих матчей)', reply_markup=MAIN_MENU)
-    except ValueError as e:
-        bot.send_message(message.chat.id, f'Ошибка: {str(e)}')
+        user = message.from_user
+        register_bot_user(user.id, user.username, user.first_name, user.last_name)
 
-@bot.message_handler(commands=['add_club'])
-def add_club_handler(message):
-    parts = message.text.split()
-    if len(parts) < 7:
-        bot.send_message(message.chat.id, "Неправильный формат. Используйте: /add_club <date> <club_name> <super_cups> <cups> <championships> <champions_leagues>")
-        return
-    date = parts[1].lower().strip()
-    if not date:
-        bot.send_message(message.chat.id, "Дата не может быть пустой!")
-        return
-    name, params = parse_name_and_params(parts, 4)
-    if name is None or len(params) != 4:
-        bot.send_message(message.chat.id, "Неправильный формат. Укажите имя, затем четыре неотрицательных целых числа (super_cups, cups, championships, champions_leagues).")
-        return
-    super_cups, cups, championships, champions_leagues = params
-    try:
-        add_club(date, name, super_cups, cups, championships, champions_leagues)
-        bot.send_message(message.chat.id, f'Клуб "{name}" добавлен на дату {date} ({super_cups} суперкубков, {cups} кубков, {championships} чемпионатов, {champions_leagues} лиг чемпионов)', reply_markup=MAIN_MENU)
-    except ValueError as e:
-        bot.send_message(message.chat.id, f'Ошибка: {str(e)}')
-
-@bot.message_handler(commands=['print_player'])
-def print_player_handler(message):
-    parts = message.text.split()
-    date_input = parts[1].lower().strip() if len(parts) > 1 else None
-    if date_input is not None and not date_input:
-        bot.send_message(message.chat.id, "Дата не может быть пустой!")
-        return
-    is_specific_date = date_input is not None
-
-    if is_specific_date:
-        date = date_input
-        if date in players and players[date]:
-            output = f"Футболисты на дату {date}:\n"
-            for p in players[date]:
-                output += f'{p["name"]}: {p["goals"]} голов, {p["assists"]} ассистов, {p["clean_sheets"]} сухих матчей\n'
-        else:
-            output = f'Футболистов на дату {date} нет'
-    else:
-        if not players:
-            output = 'Футболистов нет'
-        else:
-            output = "Все футболисты по датам:\n\n"
-            for date in sorted(players.keys()):
-                output += f"Дата: {date}\n"
-                for p in players[date]:
-                    output += f'{p["name"]}: {p["goals"]} голов, {p["assists"]} ассистов, {p["clean_sheets"]} сухих матчей\n'
-                output += '\n'
-    bot.send_message(message.chat.id, output, reply_markup=MAIN_MENU)
-
-@bot.message_handler(commands=['print_club'])
-def print_club_handler(message):
-    parts = message.text.split()
-    date_input = parts[1].lower().strip() if len(parts) > 1 else None
-    if date_input is not None and not date_input:
-        bot.send_message(message.chat.id, "Дата не может быть пустой!")
-        return
-    is_specific_date = date_input is not None
-
-    if is_specific_date:
-        date = date_input
-        if date in clubs and clubs[date]:
-            output = f"Клубы на дату {date}:\n"
-            for c in clubs[date]:
-                output += f'{c["name"]}: {c["super_cups"]} суперкубков, {c["cups"]} кубков, {c["championships"]} чемпионатов, {c["champions_leagues"]} лиг чемпионов\n'
-        else:
-            output = f'Клубов на дату {date} нет'
-    else:
-        if not clubs:
-            output = 'Клубов нет'
-        else:
-            output = "Все клубы по датам:\n\n"
-            for date in sorted(clubs.keys()):
-                output += f"Дата: {date}\n"
-                for c in clubs[date]:
-                    output += f'{c["name"]}: {c["super_cups"]} суперкубков, {c["cups"]} кубков, {c["championships"]} чемпионатов, {c["champions_leagues"]} лиг чемпионов\n'
-                output += '\n'
-    bot.send_message(message.chat.id, output, reply_markup=MAIN_MENU)
-
-def save_to_file(message):
-    try:
-        with open('Football.txt', 'w', encoding='utf-8') as f:
-            f.write("=== Players ===\n")
-            for date, plist in sorted(players.items()):
-                f.write(f"\n{date}:\n")
-                for p in plist:
-                    f.write(f" - {p['name']}: {p['goals']} голов, {p['assists']} ассистов, {p['clean_sheets']} сухих матчей\n")
-            f.write("\n=== Clubs ===\n")
-            for date, clist in sorted(clubs.items()):
-                f.write(f"\n{date}:\n")
-                for c in clist:
-                    f.write(f" - {c['name']}: {c['super_cups']} суперкубков, {c['cups']} кубков, {c['championships']} чемпионатов, {c['champions_leagues']} лиг чемпионов\n")
-
-        if os.path.exists('Football.txt') and os.path.getsize('Football.txt') > 0:
-            with open('Football.txt', 'rb') as file:
-                try:
-                    document = InputFile(file, filename='Football.txt')
-                    bot.send_document(message.chat.id, document, caption='Данные о футболистах и клубах сохранены. Вот файл для скачивания!')
-                except Exception:
-                    file.seek(0)
-                    bot.send_document(message.chat.id, file, caption='Данные о футболистах и клубах сохранены. Вот файл для скачивания!')
-            bot.send_message(message.chat.id, 'Файл успешно сохранён и отправлен вам!', reply_markup=MAIN_MENU)
-        else:
-            bot.send_message(message.chat.id, 'Ошибка: файл не создался корректно.', reply_markup=MAIN_MENU)
+        bot.send_message(message.chat.id,
+                         "Используйте кнопки меню для навигации.",
+                         reply_markup=get_main_menu())
 
     except Exception as e:
-        bot.send_message(message.chat.id, f'Ошибка при сохранении: {str(e)}', reply_markup=MAIN_MENU)
+        logger.error(f"Ошибка обработки сообщения: {e}")
+        bot.send_message(message.chat.id,
+                         "Произошла ошибка. Попробуйте еще раз.",
+                         reply_markup=get_main_menu())
+
 
 def start_bot():
-    """Функция для запуска polling. Вызывайте ее только в основном скрипте."""
-    bot.polling(none_stop=True, timeout=60)  # timeout для стабильности
+    """Запуск бота"""
+    try:
+        logger.info("Запуск Telegram бота...")
+        bot.infinity_polling(timeout=60, long_polling_timeout=30)
+    except Exception as e:
+        logger.error(f"Ошибка запуска бота: {e}")
+
 
 if __name__ == '__main__':
-    start_bot()
+    logger.info("Запуск проверки подключения к БД Gold_medal...")
+    if check_database_connection():
+        logger.info("Подключение к БД Gold_medal успешно. Запуск бота...")
+        start_bot()
+    else:
+        logger.error("Не удалось подключиться к БД Gold_medal. Запуск бота отменен.")
+        time.sleep(5)
