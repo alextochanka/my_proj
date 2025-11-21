@@ -259,7 +259,7 @@ def check_database_connection():
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 # Проверяем существование основных таблиц
-                tables = ['bot_users', 'bot_sessions', 'bot_logs', 'footballers', 'clubs']
+                tables = ['bot_users', 'bot_logs', 'footballers', 'clubs']
                 for table in tables:
                     cursor.execute(f"SHOW TABLES LIKE '{table}'")
                     if not cursor.fetchone():

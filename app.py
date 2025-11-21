@@ -279,14 +279,6 @@ def initialize_database():
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_telegram_id (telegram_id),
                         INDEX idx_created_at (created_at)
-                    )''',
-                    '''CREATE TABLE IF NOT EXISTS bot_sessions (
-                        id INT PRIMARY KEY AUTO_INCREMENT,
-                        telegram_id BIGINT NOT NULL,
-                        session_data JSON,
-                        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (telegram_id) REFERENCES bot_users(telegram_id) ON DELETE CASCADE,
-                        INDEX idx_telegram_id (telegram_id)
                     )'''
                 ]
 
